@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+
+# local database backups (contain user data)
+backups/
+
+# SQL dumps may contain user data; only the migrations are source
+*.sql
+!prisma/migrations/**/*.sql

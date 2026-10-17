@@ -1,0 +1,129 @@
+# The project name is pinned so that renaming/moving this folder does not create a second compose
+# project (new network/volume) that collides with the fixed container_name below.
+# Data lives in the named volume "<project>_postgres_data" => ai-stock-indonesia_postgres_data.
+name: ai-stock-indonesia
+
+services:
+  postgres:
+    # postgres:16-alpine + pgvector, built locally from docker/postgres/Dockerfile (same alpine base as the
+    # original image, so the existing data volume is reused unchanged). `docker compose build postgres` first.
+    image: indonesian-stock-bot-postgres:16-pgvector
+    build: ./docker/postgres
+    # Fixed on purpose: scripts/docs refer to this name. Because it is fixed, only ONE stack can
+    # use it on a machine; use `docker compose down` (not `docker rm`) to stop/remove it.
+    container_name: ai-stock-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_stock}
+    ports:
+      # Bound to localhost only; the database is not exposed to the network.
+      - "127.0.0.1:${POSTGRES_PORT:-5436}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Resource limits: a runaway query cannot take the whole machine (docs/operations.md)
+    mem_limit: 1g
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-ai_stock}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Shared ephemeral state only (quotas, locks, queues, caches). PostgreSQL stays the source of truth;
+  # the application runs without Redis (REDIS_URL empty) on its in-process implementations.
+  redis:
+    image: redis:7-alpine
+    container_name: ai-stock-redis
+    restart: unless-stopped
+    # noeviction: BullMQ keeps its queue state in keys without a TTL and requires this policy (an LRU policy could drop a
+    # waiting job). Quota/cache keys all have a TTL, so 256 MB is far more than they need.
+    # Optional password: set REDIS_PASSWORD in the environment/.env and put the same value in REDIS_URL
+    # (redis://:<password>@127.0.0.1:6380/0). Left empty, Redis stays unauthenticated, which is acceptable ONLY because
+    # the port is published on 127.0.0.1 alone; the application refuses a non-loopback Redis URL without a password.
+    command:
+      - sh
+      - -c
+      - exec redis-server --maxmemory 256mb --maxmemory-policy noeviction --save '' --appendonly no $${REDIS_PASSWORD:+--requirepass "$$REDIS_PASSWORD"}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    ports:
+      # Localhost only. 6380 on purpose: other local projects commonly take 6379.
+      - "127.0.0.1:${REDIS_PORT:-6380}:6379"
+    mem_limit: 320m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", 'if [ -n "$$REDIS_PASSWORD" ]; then REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping; else redis-cli ping; fi | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---- The bot itself, for a server (VPS). Not started by `docker compose up -d` (the "app" profile): that keeps a
+  # second bot from polling next to the one you run with `npm run start:dev`.
+  #   docker compose --profile app up -d --build      see docs/operations.md ("Deploy ke VPS")
+  # Nothing is published on the host: Telegram runs on long polling, and the REST API listens on 127.0.0.1
+  # inside the container only (the healthcheck runs there). Redis is optional and not used here: with
+  # APP_REDIS_URL empty the app runs on its in-process implementations (right for a single instance).
+  migrate:
+    profiles: ["app"]
+    image: indonesian-stock-bot-app:local
+    build: &app-build
+      context: .
+    restart: "no"
+    command: ["npx", "prisma", "migrate", "deploy"]
+    # Same default as the postgres service above. On a server set a strong POSTGRES_PASSWORD BEFORE the first start
+    # (the database keeps the password it was first created with); use letters and digits so the URL needs no escaping.
+    environment:
+      DATABASE_URL: &database-url postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ai_stock}?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    profiles: ["app"]
+    image: indonesian-stock-bot-app:local
+    build: *app-build
+    container_name: ai-stock-app
+    restart: unless-stopped
+    init: true
+    # The application's own configuration (token, access mode, AI/provider keys, ...). The values below win over it.
+    env_file: ${APP_ENV_FILE:-.env}
+    environment:
+      NODE_ENV: production
+      HOST: 127.0.0.1
+      PORT: "3000"
+      LOG_PRETTY: "false"
+      HOME: /tmp
+      DATABASE_URL: *database-url
+      # Container-side addresses (a host's localhost is not the container's localhost).
+      REDIS_URL: ${APP_REDIS_URL:-}
+      OLLAMA_BASE_URL: ${APP_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  postgres_data:

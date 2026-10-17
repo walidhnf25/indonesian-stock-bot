@@ -1,0 +1,5 @@
+# Shell scripts run on Linux (VPS, containers) as well as Git Bash: always LF, even when
+# core.autocrlf=true on Windows. A CRLF here breaks the shell ("pipefail\r: invalid option name").
+# Only *.sh on purpose: prisma/migrations/**/*.sql is left alone, because Prisma records a checksum of
+# each applied migration file and rewriting its line endings could look like drift.
+*.sh text eol=lf

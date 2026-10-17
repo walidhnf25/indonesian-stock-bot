@@ -1,0 +1,410 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AlertType {
+  PRICE_ABOVE
+  PRICE_BELOW
+  RSI_ABOVE
+  RSI_BELOW
+  VOLUME_MULTIPLIER
+  /// Unused legacy value (never implemented); kept because enum values cannot be dropped in place.
+  MA_CROSSOVER
+  /// MA20 crosses above MA50 between the previous and the current session (golden cross).
+  MA_CROSS_ABOVE
+  /// MA20 crosses below MA50 (death cross).
+  MA_CROSS_BELOW
+}
+
+enum AlertStatus {
+  ACTIVE
+  TRIGGERED
+  DISABLED
+  /// Kept by the user ("jeda alert"): not evaluated, keeps its activeKey so no duplicate can be created.
+  PAUSED
+  /// Passed its expiresAt without triggering.
+  EXPIRED
+}
+
+model User {
+  id         String                @id @default(uuid())
+  telegramId BigInt                @unique
+  chatId     BigInt
+  username   String?
+  firstName  String?
+  lastName   String?
+  language   String                @default("id")
+  timezone   String                @default("Asia/Jakarta")
+  /// Allowlisted preferences (`defaultSymbol`); validated on every read, see user-preferences.ts.
+  preferences Json                 @default("{}")
+  createdAt  DateTime              @default(now())
+  updatedAt  DateTime              @updatedAt
+  watchlists Watchlist[]
+  alerts     Alert[]
+  analyses   AIAnalysis[]
+  contexts   ConversationContext[]
+  portfolios Portfolio[]
+  knowledge  KnowledgeDocument[]
+}
+
+model Stock {
+  id          String               @id @default(uuid())
+  symbol      String               @unique
+  name        String?
+  exchange    String               @default("IDX")
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  quote       StockQuoteSnapshot?
+  dailyPrices StockDailyPrice[]
+  indicators  TechnicalIndicator[]
+  watchItems  WatchlistItem[]
+  alerts      Alert[]
+  analyses    AIAnalysis[]
+  holdings    Holding[]
+  ledger      PortfolioTransaction[]
+  fundamentalSnapshots FundamentalSnapshot[]
+}
+
+/// Latest normalized quote per stock. Used as the persistent cache / last-known-data fallback.
+model StockQuoteSnapshot {
+  stockId   String   @id
+  stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  payload   Json
+  provider  String
+  /// Provider-reported market timestamp of the quote.
+  quotedAt  DateTime
+  fetchedAt DateTime @default(now())
+}
+
+model StockDailyPrice {
+  id       String   @id @default(uuid())
+  stockId  String
+  stock    Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  date     DateTime @db.Date
+  open     Float
+  high     Float
+  low      Float
+  close    Float
+  volume   BigInt
+  provider String
+
+  @@unique([stockId, date])
+  @@index([stockId, date(sort: Desc)])
+}
+
+model TechnicalIndicator {
+  id              String   @id @default(uuid())
+  stockId         String
+  stock           Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  asOf            DateTime
+  sma5            Float?
+  sma20           Float?
+  sma50           Float?
+  sma100          Float?
+  sma200          Float?
+  ema12           Float?
+  ema26           Float?
+  rsi14           Float?
+  macd            Float?
+  macdSignal      Float?
+  macdHistogram   Float?
+  bollingerUpper  Float?
+  bollingerMiddle Float?
+  bollingerLower  Float?
+  atr14           Float?
+  volumeSma20     Float?
+  volumeRatio     Float?
+  createdAt       DateTime @default(now())
+
+  @@unique([stockId, asOf])
+}
+
+model Watchlist {
+  id        String          @id @default(uuid())
+  userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String          @default("Default")
+  createdAt DateTime        @default(now())
+  items     WatchlistItem[]
+
+  @@unique([userId, name])
+}
+
+model WatchlistItem {
+  id          String    @id @default(uuid())
+  watchlistId String
+  watchlist   Watchlist @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  stockId     String
+  stock       Stock     @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@unique([watchlistId, stockId])
+  @@index([stockId])
+}
+
+model Alert {
+  id             String      @id @default(uuid())
+  userId         String
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stockId        String
+  stock          Stock       @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  type           AlertType
+  threshold      Float
+  status         AlertStatus @default(ACTIVE)
+  /// Telegram chat the alert was created in and is delivered to. Fixed at creation: never derived from
+  /// the user's "last active chat". Private chats have chatId == the user's Telegram id.
+  chatId         BigInt?
+  /// "private" | "group" | "supergroup"
+  chatType       String      @default("private")
+  /// Value observed when the alert fired.
+  triggeredValue Float?
+  triggeredAt    DateTime?
+  /// ACTIVE/PAUSED alerts expire here (ALERT_TTL_DAYS after creation) so forgotten alerts do not run forever.
+  expiresAt      DateTime?
+  /// Delivery tracking of the triggered notification.
+  deliveredAt    DateTime?
+  deliveryError  String?
+  /// Identity of an ACTIVE alert (user:stock:type:threshold:chat), NULL in every other status. UNIQUE, so two
+  /// identical active alerts cannot exist even when created concurrently. Always set/cleared together
+  /// with `status` (see AlertService).
+  activeKey      String?     @unique
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([status, stockId])
+  @@index([userId, status])
+}
+
+model AIAnalysis {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stockId       String?
+  stock         Stock?   @relation(fields: [stockId], references: [id], onDelete: SetNull)
+  analysisType  String
+  inputSnapshot Json
+  output        Json
+  provider      String
+  model         String?
+  latencyMs     Int?
+  usedFallback  Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([stockId, createdAt(sort: Desc)])
+  @@index([createdAt])
+}
+
+model ConversationContext {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Telegram chat the context belongs to: what a user looked up in private is not reused in a group.
+  chatId    BigInt
+  context   Json
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, chatId])
+  @@index([expiresAt])
+}
+
+model DataFetchLog {
+  id        String   @id @default(uuid())
+  provider  String
+  operation String
+  symbol    String?
+  success   Boolean
+  latencyMs Int
+  error     String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([provider, success, createdAt])
+}
+
+// ---------------------------------------------------------------- portfolio
+
+enum PortfolioTxType {
+  BUY
+  SELL
+  DIVIDEND
+  DEPOSIT
+  WITHDRAWAL
+  /// Exact reversal of a previous transaction ("batalkan transaksi terakhir"); rows are never edited.
+  REVERSAL
+}
+
+/// One portfolio per user for now (name "Utama"). Money is Decimal, never a float.
+model Portfolio {
+  id           String                 @id @default(uuid())
+  userId       String
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String                 @default("Utama")
+  currency     String                 @default("IDR")
+  /// Recorded cash: deposits + sales + dividends - purchases - withdrawals. May be negative when purchases
+  /// were recorded without the deposits that funded them.
+  cash         Decimal                @default(0) @db.Decimal(20, 2)
+  /// Sum of realized profit/loss of all sales (fees included).
+  realizedPnl  Decimal                @default(0) @db.Decimal(20, 2)
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+  holdings     Holding[]
+  transactions PortfolioTransaction[]
+  snapshots    PortfolioSnapshot[]
+
+  @@unique([userId, name])
+}
+
+model Holding {
+  id          String    @id @default(uuid())
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  stockId     String
+  stock       Stock     @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  /// Shares held (1 lot = 100 shares on the IDX). Zero after a full sale; the row keeps its history.
+  quantity    Decimal   @db.Decimal(20, 4)
+  /// Average cost per share, purchase fees included (rounded, for display).
+  avgCost     Decimal   @db.Decimal(20, 4)
+  /// Exact cost of the shares held: the source of truth for the average (order-independent).
+  costBasis   Decimal   @default(0) @db.Decimal(20, 2)
+  realizedPnl Decimal   @default(0) @db.Decimal(20, 2)
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([portfolioId, stockId])
+}
+
+/// Immutable ledger. A mistake is corrected by a REVERSAL row, never by editing or deleting.
+model PortfolioTransaction {
+  id             String          @id @default(uuid())
+  portfolioId    String
+  portfolio      Portfolio       @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  stockId        String?
+  stock          Stock?          @relation(fields: [stockId], references: [id], onDelete: SetNull)
+  type           PortfolioTxType
+  quantity       Decimal?        @db.Decimal(20, 4)
+  price          Decimal?        @db.Decimal(20, 4)
+  fees           Decimal         @default(0) @db.Decimal(20, 2)
+  /// Signed effect on cash (BUY and WITHDRAWAL negative; SELL, DIVIDEND and DEPOSIT positive).
+  cashDelta      Decimal         @db.Decimal(20, 2)
+  /// Realized profit/loss booked by this row (SELL, and the reversal of a SELL).
+  realizedPnl    Decimal         @default(0) @db.Decimal(20, 2)
+  /// Holding state before this row, so that the LAST row can be undone exactly.
+  qtyBefore      Decimal?        @db.Decimal(20, 4)
+  avgCostBefore  Decimal?        @db.Decimal(20, 4)
+  /// Exact basis before the row, so a reversal restores it without rounding drift.
+  costBasisBefore Decimal?       @db.Decimal(20, 2)
+  /// For REVERSAL rows: the transaction being undone. A transaction can be reversed once.
+  reversesId     String?         @unique
+  note           String?
+  /// Telegram message id (or a text hash): the same message recorded twice creates one row.
+  idempotencyKey String          @unique
+  chatId         BigInt
+  occurredAt     DateTime        @default(now())
+  createdAt      DateTime        @default(now())
+
+  @@index([portfolioId, createdAt])
+}
+
+model PortfolioSnapshot {
+  id            String    @id @default(uuid())
+  portfolioId   String
+  portfolio     Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  /// Calendar day (Asia/Jakarta) the snapshot describes, stored at 00:00 UTC of that date.
+  asOf          DateTime
+  marketValue   Decimal   @db.Decimal(20, 2)
+  cash          Decimal   @db.Decimal(20, 2)
+  costBasis     Decimal   @db.Decimal(20, 2)
+  unrealizedPnl Decimal   @db.Decimal(20, 2)
+  realizedPnl   Decimal   @db.Decimal(20, 2)
+  /// Holdings that had no trusted quote and were valued at cost.
+  unpriced      Int       @default(0)
+  createdAt     DateTime  @default(now())
+
+  @@unique([portfolioId, asOf])
+}
+
+/// Who may see a knowledge document. GLOBAL = application corpus; USER = one user's note.
+enum KnowledgeScope {
+  GLOBAL
+  USER
+}
+
+model KnowledgeDocument {
+  id          String           @id @default(uuid())
+  scope       KnowledgeScope
+  userId      String?
+  user        User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// 'corpus' (application-authored) or 'note' (written by the user)
+  source      String
+  /// Stable id for idempotent corpus ingestion; null for notes
+  externalId  String?
+  title       String
+  content     String
+  contentHash String
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  chunks      KnowledgeChunk[]
+
+  @@unique([source, externalId])
+  @@index([userId, createdAt])
+}
+
+model KnowledgeChunk {
+  id             String                @id @default(uuid())
+  documentId     String
+  document       KnowledgeDocument     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  ordinal        Int
+  content        String
+  /// Which embedding model produced `embedding`; vectors of different models are never compared
+  embeddingModel String?
+  /// pgvector column (untyped dimension); written and queried with raw SQL in RagService
+  embedding      Unsupported("vector")?
+  /// Full-text column maintained by PostgreSQL (GENERATED ALWAYS AS to_tsvector('simple', content))
+  search         Unsupported("tsvector")?
+
+  @@unique([documentId, ordinal])
+  @@index([embeddingModel])
+}
+
+/// Fundamentals as fetched from the provider, one row per stock per day (UTC). Serves as the
+/// last-known figures when the provider is unavailable; the fundamentals service marks them stale by age.
+model FundamentalSnapshot {
+  id        String   @id @default(uuid())
+  stockId   String
+  stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  day       DateTime @db.Date
+  asOf      DateTime
+  source    String
+  data      Json
+  createdAt DateTime @default(now())
+
+  @@unique([stockId, day])
+  @@index([stockId, asOf])
+  @@index([asOf])
+}
+
+/// One headline, stored once (provider id and normalised title), with the stocks it is about and
+/// the corporate-action events its title literally names. No sentiment column on purpose (docs/news.md).
+model NewsArticle {
+  id          String   @id @default(uuid())
+  externalId  String   @unique
+  titleHash   String
+  title       String
+  source      String
+  url         String?
+  publishedAt DateTime
+  fetchedAt   DateTime @default(now())
+  symbols     String[]
+  events      String[]
+
+  @@index([titleHash])
+  @@index([publishedAt])
+  @@index([symbols], type: Gin)
+}

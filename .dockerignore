@@ -1,0 +1,18 @@
+# Keep secrets, personal data and build output out of the image / build context.
+.git
+.gitignore
+.gitattributes
+node_modules
+dist
+coverage
+.env
+.env.*
+!.env.example
+backups
+docs
+test
+scripts
+docker
+*.md
+*.sql
+!prisma/migrations/**/*.sql
