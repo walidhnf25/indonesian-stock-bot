@@ -11,7 +11,7 @@ are fetched/calculated deterministically in TypeScript; the LLM only *explains* 
 - Runs **entirely on your Windows PC**: NestJS + PostgreSQL (Docker) + Ollama (local AI) + Telegram long polling.
 - No public IP, domain, HTTPS, webhook, VPS, ngrok or paid service required.
 
-> Security checks on this project were automated and done by the builder; they are **not** a substitute for a security review by a human or a third party.
+> Status, evidence and limitations are in the [project report](docs/project-report.md); the threat model and controls are in [docs/security.md](docs/security.md). Security checks on this project were automated and done by the builder; they are **not** a substitute for a security review by a human or a third party.
 
 ---
 
@@ -150,6 +150,8 @@ Long polling only needs outbound internet. The bot deletes any old webhook on st
 (two pollers get `409 Conflict`). In groups the bot only reacts to commands and `@mentions`, and only for allowed users.
 
 ## Security and access control
+
+The threat model, the controls and the tests that cover them, the known risks, and how to report a vulnerability are in [docs/security.md](docs/security.md).
 
 **Who can use the bot.** Controlled by `TELEGRAM_ACCESS_MODE`:
 
@@ -638,17 +640,17 @@ no fake data is ever shown as market data.
 
 ## Known limitations
 
-- Yahoo Finance is unofficial and ~10 min delayed; no foreign-flow / broker data; no news or sentiment (the bot says so).
+- Yahoo Finance is unofficial and ~10 min delayed; no foreign-flow / broker data. News is headlines only (dated, sourced, tagged with corporate-action events, archived when the provider is down): there is no sentiment analysis and a headline is never offered as the cause of a price move. The bot says so when a source is unavailable.
 - Screening covers the configured universe, not every IDX ticker.
 - AI analysis and comparison notes are selections of application-written sentences (no model prose), so they read like a short fact sheet; the model only chooses which facts matter. Always read the deterministic section too.
-- Market holidays are configuration, not auto-detected. Trading hours follow the regular IDX schedule and may change.
+- Market holidays are configuration (`MARKET_HOLIDAYS`), not auto-detected; while the list is empty a holiday is treated as a trading day. Trading hours follow the regular IDX schedule and may change.
 - Gemini/OpenAI providers are covered by mocked tests only. The Telegram transport is tested with a stubbed Bot API, not with a live session.
-- Single instance only (in-memory caches, AI queue and per-user limits reset on restart); not designed for horizontal scaling yet.
+- Redis is optional. Without `REDIS_URL` everything runs in one process (caches, AI queue and per-user limits reset on restart). With Redis, quotas and the BullMQ queues (`alerts`, `maintenance`, `notifications`) are shared and `BOT_ROLE` can split the gateway from the workers, but some state stays per process on purpose: the Telegram sender gate and group message budgets (they belong to the one polling connection), the AI fairness gate (it protects one local model) and the in-memory caches. Only one process may poll Telegram. Multi-process operation has not been measured with two real processes.
 - One data provider (Yahoo, unofficial). If it is down the app serves stored data marked STALE; there is no second source to cross-check prices.
 - The output policy (`ai/policy`) is rule-based and cannot be proven complete, but it only guards application-written text, not model prose; the model cannot add words of its own.
 - The access mode and allowlist are read at startup (restart to change them). The per-user limits trust the Telegram user ID.
-- In `public` mode there is no global user cap, and a determined abuser with many Telegram accounts can still keep the single local model busy (other users then get data without AI). Fairness is per Telegram user ID only.
-- Alerts, rate limits, the AI gate and the not-found ticker cache are in-process; a restart resets them.
+- In `public` mode there is no cap on the number of users, and fairness is per Telegram user ID. Provider calls are bounded: each user may cause 30 uncached calls a minute and 300 an hour, all users share one hourly pool, and a separate reserve is kept for alert evaluation. About 27 accounts at their hourly cap can still exhaust the users' pool (other users then get stored data marked STALE or an honest "data is limited" message, but alerts keep being evaluated), and many accounts can still keep the single local model busy (other users then get data without AI).
+- Alerts are stored in PostgreSQL and survive restarts. The AI gate, the sender gate and the not-found ticker cache are in-process and reset on restart; per-user message and provider quotas are in-process too unless Redis is configured. If Redis itself restarts without persistence its quota windows are forgotten; a process-local floor keeps one process within the documented limits, but several processes may briefly spend more.
 - A real price move larger than `PRICE_ANOMALY_MAX_CHANGE_PERCENT`, a split or another corporate action makes the quote `suspect` and suppresses alerts until data normalises (deliberate trade-off).
 - The conceptual glossary covers the listed indicators only; other topics get a “topik yang bisa saya jelaskan” list.
 - Time references in questions are interpreted in Asia/Jakarta. Intraday history (`jam 10:00`) is not supported and says so; relative
@@ -674,9 +676,10 @@ no fake data is ever shown as market data.
 - Log lines contain the numeric Telegram ID of the sender (needed to correlate a problem report) but no message text, username or name;
   logs and `/health` are scrubbed of tokens, passwords and keys. The default Docker database password is `postgres` and the port is
   bound to 127.0.0.1 only: change `POSTGRES_PASSWORD` (and `DATABASE_URL`) before exposing the database on any other interface.
-- Output/quote guards have deliberate limits: leet-style spellings such as `be!i` are not normalised by the policy, a consistent +49 %
-  jump passes by design (`PRICE_ANOMALY_MAX_CHANGE_PERCENT` is configurable), and the 3 remaining `npm audit` highs (`deepmerge-ts` →
-  `@prisma/config` → `prisma`) sit in the Prisma CLI, which only runs migrations; the only offered fix is a major downgrade/upgrade of Prisma. `npm run start:prod` does not set `NODE_ENV` for you (the pretty log transport is only used if
+- Output/quote guards have deliberate limits: leet-style spellings such as `be!i` are not normalised by the policy, and a consistent +49 %
+  jump passes by design (`PRICE_ANOMALY_MAX_CHANGE_PERCENT` is configurable).
+- Dependencies: `npm audit --omit=dev` reports 3 highs (`deepmerge-ts` → `@prisma/config` → `prisma`) in the Prisma CLI, which only runs migrations; the only offered fix is a major downgrade/upgrade of Prisma. Development-only advisories (for example `ts-jest` → `handlebars`) affect the test tooling, not the running bot; `npm audit fix` addresses some of them. Run `npm audit` for the current state.
+- `npm run start:prod` does not set `NODE_ENV` for you (the pretty log transport is only used if
   `pino-pretty`, a dev dependency, is installed).
 - Alert delivery is **at-most-once**: an alert is claimed (`TRIGGERED`) before the message is sent so it can never be sent twice; if the process crashes between those two steps that one notification is lost. Failed sends (Telegram down) are put back and retried.
 - The REST API has **no authentication** (it binds to `127.0.0.1` by default). Do not set `HOST` to a public address without adding authentication: `POST /analysis/:symbol` triggers LLM work and `/health` names the provider/model.
