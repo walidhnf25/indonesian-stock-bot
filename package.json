@@ -2,6 +2,7 @@
   "name": "ai-stock-indonesia",
   "version": "1.0.0",
   "description": "AI-powered Indonesian stock market (IDX) Telegram bot — natural language, local-first",
+  "author": "Walid Hanif Ataullah",
   "main": "dist/main.js",
   "scripts": {
     "build": "nest build",
@@ -34,7 +35,7 @@
     "docker:verify": "node scripts/verify-docker-limits.js",
     "test:mutations": "node scripts/security-mutations.js"
   },
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@grammyjs/runner": "^2.0.3",

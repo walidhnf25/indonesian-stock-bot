@@ -11,6 +11,8 @@ are fetched/calculated deterministically in TypeScript; the LLM only *explains* 
 - Runs **entirely on your Windows PC**: NestJS + PostgreSQL (Docker) + Ollama (local AI) + Telegram long polling.
 - No public IP, domain, HTTPS, webhook, VPS, ngrok or paid service required.
 
+> Security checks on this project were automated and done by the builder; they are **not** a substitute for a security review by a human or a third party.
+
 ---
 
 ## Contents
@@ -19,7 +21,7 @@ are fetched/calculated deterministically in TypeScript; the LLM only *explains* 
 5. [Telegram bot setup](#telegram-bot-setup) · 6. **[Security and access control](#security-and-access-control)** · 7. [PostgreSQL](#postgresql-setup) · 8. [Ollama](#ollama-setup)
 9. [AI safety, limits and timeouts](#ai-safety-limits-and-timeouts) · 10. [Stock data provider](#stock-data-provider) · 11. [Data freshness and plausibility](#data-freshness-and-plausibility)
 12. [Environment variables](#environment-variables) · 13. [Usage](#telegram-usage) · 14. [REST API](#rest-api) · 15. [Technical analysis rules](#technical-analysis-rules)
-16. [Testing](#testing) · 17. [Troubleshooting](#troubleshooting) · 18. [Known limitations](#known-limitations) · 19. [Future deployment](#future-deployment)
+16. [Testing](#testing) · 17. [Troubleshooting](#troubleshooting) · 18. [Known limitations](#known-limitations) · 19. [Future deployment](#future-deployment) · 20. [License](#license)
 
 ---
 
@@ -690,3 +692,7 @@ for multi-instance setups. Extension points already exist for new data providers
 and a web dashboard.
 
 > **Disclaimer:** Informasi ini bersifat edukasi dan analisis berbasis data, bukan rekomendasi investasi.
+
+## License
+
+Released under the [MIT License](LICENSE).
