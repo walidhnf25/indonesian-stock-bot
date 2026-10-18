@@ -678,7 +678,7 @@ no fake data is ever shown as market data.
   bound to 127.0.0.1 only: change `POSTGRES_PASSWORD` (and `DATABASE_URL`) before exposing the database on any other interface.
 - Output/quote guards have deliberate limits: leet-style spellings such as `be!i` are not normalised by the policy, and a consistent +49 %
   jump passes by design (`PRICE_ANOMALY_MAX_CHANGE_PERCENT` is configurable).
-- Dependencies: `npm audit --omit=dev` reports 3 highs (`deepmerge-ts` → `@prisma/config` → `prisma`) in the Prisma CLI, which only runs migrations; the only offered fix is a major downgrade/upgrade of Prisma. Development-only advisories (for example `ts-jest` → `handlebars`) affect the test tooling, not the running bot; `npm audit fix` addresses some of them. Run `npm audit` for the current state.
+- Dependencies: `npm audit` reports no critical advisory. Three high ones remain (`deepmerge-ts` → `@prisma/config` → `prisma`) in the Prisma CLI, which only runs migrations and is not part of the running bot; the only offered fix is a major downgrade/upgrade of Prisma (`npm audit fix --force`), which was not applied. The moderate advisories are in development tooling. Run `npm audit` for the current state.
 - `npm run start:prod` does not set `NODE_ENV` for you (the pretty log transport is only used if
   `pino-pretty`, a dev dependency, is installed).
 - Alert delivery is **at-most-once**: an alert is claimed (`TRIGGERED`) before the message is sent so it can never be sent twice; if the process crashes between those two steps that one notification is lost. Failed sends (Telegram down) are put back and retried.
